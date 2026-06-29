@@ -1,0 +1,22 @@
+[
+  {
+    "id": "natural-brown",
+    "name": "내추럴 브라운",
+    "category": "내추럴 렌즈",
+    "dia": "14.2mm",
+    "bc": "8.6mm",
+    "price": "18,000원",
+    "texture": "assets/lens_natural_brown.png",
+    "swatch": "#764e2d"
+  },
+  {
+    "id": "gray-circle",
+    "name": "그레이 서클",
+    "category": "서클 렌즈",
+    "dia": "14.5mm",
+    "bc": "8.6mm",
+    "price": "22,000원",
+    "texture": "assets/lens_gray_circle.png",
+    "swatch": "#96a5af"
+  }
+]
