@@ -6,6 +6,8 @@ import {
 const video = document.getElementById("video");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
+// video element is hidden; we draw it onto canvas every frame
+video.style.display = "none";
 const statusEl = document.getElementById("status");
 const productListEl = document.getElementById("product-list");
 const captureBtn = document.getElementById("capture-btn");
@@ -118,7 +120,13 @@ function renderLoop() {
 
   const w = canvas.width;
   const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
+
+  // Draw mirrored video frame as background
+  ctx.save();
+  ctx.translate(w, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, w, h);
+  ctx.restore();
 
   const result = faceLandmarker.detectForVideo(video, performance.now());
 
@@ -135,25 +143,24 @@ function renderLoop() {
 
   const landmarks = result.faceLandmarks[0];
 
+  // Mirror x-coordinate to match the flipped video
   const left = irisCenterAndRadius(landmarks, LEFT_IRIS, w, h);
   const right = irisCenterAndRadius(landmarks, RIGHT_IRIS, w, h);
+  left.cx = w - left.cx;
+  right.cx = w - right.cx;
 
+  // Blend lens with 'multiply' so the real iris/pupil underneath shows through naturally
+  ctx.globalCompositeOperation = "multiply";
+  ctx.globalAlpha = 0.88;
   drawLensOnEye(lensImg, left.cx, left.cy, left.radius);
   drawLensOnEye(lensImg, right.cx, right.cy, right.radius);
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1.0;
 }
 
 function capture() {
-  const out = document.createElement("canvas");
-  out.width = canvas.width;
-  out.height = canvas.height;
-  const octx = out.getContext("2d");
-  // mirror to match what the user sees on screen
-  octx.translate(out.width, 0);
-  octx.scale(-1, 1);
-  octx.drawImage(video, 0, 0, out.width, out.height);
-  octx.drawImage(canvas, 0, 0, out.width, out.height);
-
-  out.toBlob((blob) => {
+  // canvas already contains video + lens composite
+  canvas.toBlob((blob) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

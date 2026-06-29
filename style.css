@@ -128,13 +128,14 @@ html, body {
   height: 100%;
 }
 
-#video, #overlay {
+#video { display: none; }
+
+#overlay {
   position: absolute;
   top: 0; left: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1); /* mirror like a selfie cam */
 }
 
 #status {
