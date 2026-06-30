@@ -22,6 +22,16 @@
     "swatch": "#4a7fa8"
   },
   {
+    "id": "zeroturn-choco",
+    "name": "제로턴 초코 (실사)",
+    "category": "1DAY 서클렌즈",
+    "dia": "14.2mm",
+    "bc": "8.6mm",
+    "price": "30,000원",
+    "texture": "assets/lens_ref3.png",
+    "swatch": "#7a5a4e"
+  },
+  {
     "id": "natural-brown",
     "name": "내추럴 브라운",
     "category": "내추럴 렌즈",
