@@ -92,38 +92,21 @@ function drawTextureLens(lensImg, geo, tintRgb, contourIndices, landmarks, w, h)
   ctx.closePath();
   ctx.clip();
 
-  // 1. 렌즈 텍스처
+  // 렌즈 텍스처 합성 (텍스처 자체에 색/투명동공/림벌링이 모두 포함됨)
+  // source-over: 반투명 색 영역이 실제 홍채 위에 자연스럽게 얹힘, 동공은 투명
   ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.88;
+  ctx.globalAlpha = 0.92;
   ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
 
-  // 2. 색상 오버레이 (브라운 vs 블루 등 제품 색 강조)
-  //    screen 블렌드: 어두운 눈에서도 색이 드러남
-  if (tintRgb) {
-    const [r2, g, b] = tintRgb;
-    ctx.globalCompositeOperation = "screen";
-    ctx.globalAlpha = 0.35;
-    // 동공 제외한 링 존에만 색 입히기
-    const ring = ctx.createRadialGradient(cx, cy, r*0.35, cx, cy, r*0.95);
-    ring.addColorStop(0, `rgba(${r2},${g},${b},0)`);
-    ring.addColorStop(0.3, `rgba(${r2},${g},${b},1)`);
-    ring.addColorStop(1, `rgba(${r2},${g},${b},0.6)`);
-    ctx.fillStyle = ring;
-    ctx.beginPath();
-    ctx.arc(cx, cy, r * 1.0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // 3. 광택 하이라이트 (습윤감)
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.18;
-  const hx = cx - r*0.18, hy = cy - r*0.22;
-  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, r*0.36);
-  glow.addColorStop(0, "rgba(255,255,255,0.9)");
-  glow.addColorStop(1, "rgba(255,255,255,0)");
+  // 작은 캐치라이트 (눈동자 위 점광원 반사 — 습윤감, 자연스러움의 핵심)
+  ctx.globalAlpha = 0.55;
+  const hx = cx - r*0.22, hy = cy - r*0.26;
+  const spec = ctx.createRadialGradient(hx, hy, 0, hx, hy, r*0.14);
+  spec.addColorStop(0, "rgba(255,255,255,0.85)");
+  spec.addColorStop(1, "rgba(255,255,255,0)");
   ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI*2);
-  ctx.fillStyle = glow;
+  ctx.arc(hx, hy, r*0.14, 0, Math.PI*2);
+  ctx.fillStyle = spec;
   ctx.fill();
 
   ctx.restore();
