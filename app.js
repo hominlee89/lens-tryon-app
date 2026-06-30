@@ -3,36 +3,30 @@ import {
   FilesetResolver,
 } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 
-const video = document.getElementById("video");
-const canvas = document.getElementById("overlay");
-const ctx = canvas.getContext("2d");
+const video    = document.getElementById("video");
+const canvas   = document.getElementById("overlay");
+const ctx      = canvas.getContext("2d");
 video.style.display = "none";
-const statusEl = document.getElementById("status");
+const statusEl      = document.getElementById("status");
 const productListEl = document.getElementById("product-list");
-const captureBtn = document.getElementById("capture-btn");
+const captureBtn    = document.getElementById("capture-btn");
 
-// Iris landmarks (refineLandmarks=true): center + 4 boundary points
 const LEFT_IRIS  = [468, 469, 470, 471, 472];
 const RIGHT_IRIS = [473, 474, 475, 476, 477];
 
-// Eye-opening contour landmarks (traces upper + lower eyelid boundary)
+// Eye-opening contour (upper + lower eyelid boundary)
 const LEFT_EYE_CONTOUR  = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
 const RIGHT_EYE_CONTOUR = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382];
 
 let faceLandmarker = null;
 let products = [];
 let activeProduct = null;
-const lensImages = {};
 let lastVideoTime = -1;
 
 async function loadProducts() {
   const res = await fetch("products.json");
   products = await res.json();
-  products.forEach((p) => {
-    const img = new Image();
-    img.src = p.texture;
-    lensImages[p.id] = img;
-  });
+
   productListEl.innerHTML = "";
   products.forEach((p) => {
     const card = document.createElement("div");
@@ -83,7 +77,7 @@ async function setupCamera() {
   video.srcObject = stream;
   await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
   video.play();
-  canvas.width = video.videoWidth;
+  canvas.width  = video.videoWidth;
   canvas.height = video.videoHeight;
 }
 
@@ -102,30 +96,59 @@ function irisCenterAndRadius(landmarks, indices, w, h) {
   return { cx, cy, radius };
 }
 
-// Clip canvas to eye-opening shape, draw lens inside, then restore
-function drawLensWithEyeClip(lensImg, irisX, irisY, radius, contourIndices, landmarks, w, h) {
-  if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-
-  // Lens PNG: colored zone = 41% of half-image → scale = 1/0.82 = 1.22 to match iris
-  const scale = 1.22;
-  const size = radius * scale * 2;
-
-  ctx.save();
-
-  // Build eyelid clipping path (mirrored x)
+function clipToEye(contourIndices, landmarks, w, h) {
   ctx.beginPath();
   contourIndices.forEach((idx, i) => {
     const pt = landmarks[idx];
-    const x = w - pt.x * w;
+    const x = w - pt.x * w; // mirrored
     const y = pt.y * h;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
   });
   ctx.closePath();
-  ctx.clip(); // lens only renders inside the eye opening
+  ctx.clip();
+}
 
-  ctx.globalAlpha = 0.82; // semi-transparent so real iris/pupil shows through
-  ctx.drawImage(lensImg, irisX - size / 2, irisY - size / 2, size, size);
+function drawLensOnIris(cx, cy, irisR, color, contourIndices, landmarks, w, h) {
+  const [r, g, b] = color;
+  const pupilR = irisR * 0.42; // estimated pupil ≈ 42% of iris radius
+
+  ctx.save();
+  clipToEye(contourIndices, landmarks, w, h);
+
+  // ── 1. Color tint via 'screen' blend ─────────────────────────────
+  // screen: result = 1-(1-src)(1-dst)  → adds color to dark iris naturally
+  ctx.globalCompositeOperation = "screen";
+
+  const grad = ctx.createRadialGradient(cx, cy, pupilR * 0.85, cx, cy, irisR * 1.02);
+  grad.addColorStop(0.00, `rgba(${r},${g},${b},0)`);
+  grad.addColorStop(0.15, `rgba(${r},${g},${b},0.70)`);
+  grad.addColorStop(0.55, `rgba(${r},${g},${b},0.78)`);
+  grad.addColorStop(0.85, `rgba(${r},${g},${b},0.60)`);
+  grad.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, irisR * 1.05, 0, Math.PI * 2);
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // ── 2. Limbal ring — dark edge defining the lens boundary ─────────
+  ctx.globalCompositeOperation = "source-over";
+  ctx.beginPath();
+  ctx.arc(cx, cy, irisR * 0.97, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(8, 5, 3, 0.72)`;
+  ctx.lineWidth = irisR * 0.10;
+  ctx.stroke();
+
+  // ── 3. Subtle inner iris highlight (adds depth, mimics real lens) ─
+  ctx.globalCompositeOperation = "screen";
+  const innerGrad = ctx.createRadialGradient(cx, cy, pupilR, cx, cy, irisR * 0.6);
+  innerGrad.addColorStop(0,   `rgba(${r},${g},${b},0)`);
+  innerGrad.addColorStop(0.5, `rgba(255,255,255,0.06)`);
+  innerGrad.addColorStop(1,   `rgba(255,255,255,0)`);
+  ctx.beginPath();
+  ctx.arc(cx, cy, irisR * 0.6, 0, Math.PI * 2);
+  ctx.fillStyle = innerGrad;
+  ctx.fill();
 
   ctx.restore();
 }
@@ -140,7 +163,7 @@ function renderLoop() {
   const w = canvas.width;
   const h = canvas.height;
 
-  // Draw mirrored video as background
+  // Draw mirrored video frame
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
@@ -155,23 +178,16 @@ function renderLoop() {
     return;
   }
   statusEl.style.display = "none";
-
   if (!activeProduct) return;
-  const lensImg = lensImages[activeProduct.id];
-  if (!lensImg) return;
 
   const landmarks = result.faceLandmarks[0];
-
   const left  = irisCenterAndRadius(landmarks, LEFT_IRIS,  w, h);
   const right = irisCenterAndRadius(landmarks, RIGHT_IRIS, w, h);
-
-  // Mirror iris centers to match flipped video
   left.cx  = w - left.cx;
   right.cx = w - right.cx;
 
-  // Draw each lens clipped to its eyelid opening
-  drawLensWithEyeClip(lensImg, left.cx,  left.cy,  left.radius,  LEFT_EYE_CONTOUR,  landmarks, w, h);
-  drawLensWithEyeClip(lensImg, right.cx, right.cy, right.radius, RIGHT_EYE_CONTOUR, landmarks, w, h);
+  drawLensOnIris(left.cx,  left.cy,  left.radius,  activeProduct.color, LEFT_EYE_CONTOUR,  landmarks, w, h);
+  drawLensOnIris(right.cx, right.cy, right.radius, activeProduct.color, RIGHT_EYE_CONTOUR, landmarks, w, h);
 }
 
 function capture() {
