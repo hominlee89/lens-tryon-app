@@ -267,26 +267,40 @@ async function setupCamera() {
 }
 
 // ── Render loop ───────────────────────────────────────────────────────────────
-function renderLoop() {
-  requestAnimationFrame(renderLoop);
+// 검출(ML)과 렌더를 분리: 검출은 ~30Hz로 캡, 렌더는 매 비디오 프레임
+let lastResult = null;
+let lastDetect = 0;
+const DETECT_INTERVAL = 33; // ms ≈ 30Hz. ML 부하/발열 완화
+let running = false;
+
+function processFrame() {
+  if (!running) return;
+  scheduleNext();
   if (!faceLandmarker || video.readyState < 2) return;
-  if (video.currentTime === lastVideoTime) return;
-  lastVideoTime = video.currentTime;
 
   const w = canvas.width, h = canvas.height;
+
+  // 비디오 그리기 (미러)
   ctx.save(); ctx.translate(w,0); ctx.scale(-1,1);
   ctx.drawImage(video,0,0,w,h); ctx.restore();
 
-  const result = faceLandmarker.detectForVideo(video, performance.now());
-  if (!result.faceLandmarks?.length) {
+  // 검출은 간격 캡 — 그 사이 프레임은 직전 결과 재사용 (스무딩이 연속성 보완)
+  const now = performance.now();
+  if (now - lastDetect >= DETECT_INTERVAL) {
+    lastResult = faceLandmarker.detectForVideo(video, now);
+    lastDetect = now;
+  }
+
+  if (!lastResult?.faceLandmarks?.length) {
     statusEl.style.display = "block";
     statusEl.textContent = "얼굴을 카메라 앞에 위치시켜 주세요";
+    smoothState.left = smoothState.right = null; // 얼굴 사라지면 스무딩 리셋
     return;
   }
   statusEl.style.display = "none";
   if (!activeProduct) return;
 
-  const lm = result.faceLandmarks[0];
+  const lm = lastResult.faceLandmarks[0];
   const leftGeo  = smoothGeo("left",  irisGeometry(lm, LEFT_IRIS,  w, h));
   const rightGeo = smoothGeo("right", irisGeometry(lm, RIGHT_IRIS, w, h));
 
@@ -299,6 +313,25 @@ function renderLoop() {
     tintIris(rightGeo.cx, rightGeo.cy, rightGeo.r, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
   }
 }
+
+// 비디오 프레임 콜백 우선 (정확한 동기 + 배터리 절약), 미지원 시 rAF 폴백
+const hasRVFC = typeof video.requestVideoFrameCallback === "function";
+function scheduleNext() {
+  if (hasRVFC) video.requestVideoFrameCallback(processFrame);
+  else requestAnimationFrame(processFrame);
+}
+function startLoop() {
+  if (running) return;
+  running = true;
+  scheduleNext();
+}
+function stopLoop() { running = false; }
+
+// 탭이 백그라운드로 가면 루프 정지 (배터리/발열 절약), 복귀 시 재개
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopLoop();
+  else startLoop();
+});
 
 function capture() {
   canvas.toBlob(blob => {
@@ -318,7 +351,7 @@ async function init() {
   statusEl.textContent = "카메라 권한을 허용해 주세요";
   try { await setupCamera(); }
   catch (err) { statusEl.textContent = "카메라 접근 실패: " + err.message; return; }
-  renderLoop();
+  startLoop();
 }
 
 init();
