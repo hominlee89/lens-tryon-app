@@ -60,8 +60,6 @@ function pointInPolygon(px, py, poly) {
 function drawTextureLens(lensImg, cx, cy, irisR, contourIndices, landmarks, w, h) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
 
-  // 렌즈 PNG의 링 존 = 이미지의 약 90% → scale=1/0.90=1.11
-  // 실제 렌즈는 홍채보다 살짝 크게(+15%) 맞춤
   const scale = 1.28;
   const size  = irisR * scale * 2;
 
@@ -77,17 +75,18 @@ function drawTextureLens(lensImg, cx, cy, irisR, contourIndices, landmarks, w, h
   ctx.closePath();
   ctx.clip();
 
-  // tintIris가 이미 색+밝기를 입혔으므로, 여기선 도트/패턴 텍스처만 multiply로 올림
-  ctx.globalCompositeOperation = "multiply";
+  // 컬러렌즈는 홍채를 덮는 불투명 플라스틱 → source-over가 물리적으로 정확함
+  // 텍스처 PNG의 투명 중앙(동공 부분)은 실제 동공이 비쳐 보임
+  ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 0.88;
   ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
 
-  // 동공 위에 살짝 하이라이트 (광택감)
-  ctx.globalCompositeOperation = "screen";
-  ctx.globalAlpha = 0.15;
+  // 눈 광택 하이라이트 (자연스러운 습윤감)
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.18;
   const hx = cx - irisR*0.18, hy = cy - irisR*0.22;
-  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, irisR*0.35);
-  glow.addColorStop(0, "rgba(255,255,255,1)");
+  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, irisR*0.38);
+  glow.addColorStop(0, "rgba(255,255,255,0.9)");
   glow.addColorStop(1, "rgba(255,255,255,0)");
   ctx.beginPath();
   ctx.arc(cx, cy, irisR, 0, Math.PI*2);
@@ -130,10 +129,10 @@ function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
       const innerFade = Math.min(1,(dist-pupilR*0.88)/(pupilR*0.30));
       const strength  = outerFade*innerFade*0.92;
       const newS = pS+(Math.max(tS,0.45)-pS)*strength;
-      const darkBoost = (1-pL)*0.82; // 어두운 눈일수록 강하게 밝힘
-      const targetL = Math.max(0.40, tL*0.8+0.15); // 최소 밝기 보장
+      const darkBoost = (1-pL)*0.55;
+      const targetL = tL*0.75+0.18;
       const newL = pL+(targetL-pL+darkBoost)*strength;
-      const [nr,ng,nb] = hslToRgb(pH+(tH-pH)*strength, newS, Math.min(0.75,newL));
+      const [nr,ng,nb] = hslToRgb(pH+(tH-pH)*strength, newS, Math.min(0.72,newL));
       d[i]=nr; d[i+1]=ng; d[i+2]=nb;
     }
   }
@@ -257,11 +256,6 @@ function renderLoop() {
 
   if (activeProduct.texture && lensImages[activeProduct.id]) {
     const img = lensImages[activeProduct.id];
-    const base = activeProduct.baseColor;
-    // 1단계: 픽셀 조작으로 홍채 색+밝기 강하게 변환
-    tintIris(left.cx,  left.cy,  left.radius,  base, LEFT_EYE_CONTOUR,  lm, w, h);
-    tintIris(right.cx, right.cy, right.radius, base, RIGHT_EYE_CONTOUR, lm, w, h);
-    // 2단계: 실제 렌즈 텍스처를 multiply로 → 도트/패턴만 입힘 (색은 1단계가 처리)
     drawTextureLens(img, left.cx,  left.cy,  left.radius,  LEFT_EYE_CONTOUR,  lm, w, h);
     drawTextureLens(img, right.cx, right.cy, right.radius, RIGHT_EYE_CONTOUR, lm, w, h);
   } else if (activeProduct.color) {
