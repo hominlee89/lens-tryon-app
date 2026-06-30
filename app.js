@@ -124,7 +124,7 @@ function drawLensWithEyeClip(lensImg, irisX, irisY, radius, contourIndices, land
   ctx.closePath();
   ctx.clip(); // lens only renders inside the eye opening
 
-  ctx.globalAlpha = 0.93;
+  ctx.globalAlpha = 0.82; // semi-transparent so real iris/pupil shows through
   ctx.drawImage(lensImg, irisX - size / 2, irisY - size / 2, size, size);
 
   ctx.restore();
