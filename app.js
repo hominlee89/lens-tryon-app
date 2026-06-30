@@ -106,7 +106,10 @@ function irisCenterAndRadius(landmarks, indices, w, h) {
 
 function drawLensOnEye(lensImg, cx, cy, radius) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-  const scale = 2.6; // lens covers full iris — MediaPipe iris radius ≈ half the real iris
+  // Lens PNG colored zone occupies 0~41% from center (out of 50%).
+  // To make colored zone match actual iris: scale = 1 / (0.41/0.5) = 1.22
+  // Add 15% extra so lens covers iris edge like real contact lenses → 1.4
+  const scale = 1.4;
   const size = radius * scale * 2;
   ctx.drawImage(lensImg, cx - size / 2, cy - size / 2, size, size);
 }
