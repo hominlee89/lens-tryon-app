@@ -86,9 +86,15 @@ function irisGeometry(lm, indices, w, h) {
   const c = P(0);
   // indices[1..4]: 원 둘레의 4점, 마주보는 쌍 = (1,3), (2,4)
   const p1 = P(1), p2 = P(2), p3 = P(3), p4 = P(4);
-  // 반(half) 축 벡터
-  const ax = [(p1[0]-p3[0])/2, (p1[1]-p3[1])/2]; // 한 지름의 절반
-  const ay = [(p2[0]-p4[0])/2, (p2[1]-p4[1])/2]; // 직교 지름의 절반
+  const v1 = [(p1[0]-p3[0])/2, (p1[1]-p3[1])/2];
+  const v2 = [(p2[0]-p4[0])/2, (p2[1]-p4[1])/2];
+  // 더 세로에 가까운 벡터를 ay(수직축), 나머지를 ax(수평축)로
+  let ax, ay;
+  if (Math.abs(v1[1]) > Math.abs(v2[1])) { ay = v1; ax = v2; }
+  else                                   { ay = v2; ax = v1; }
+  // 방향 부호 고정: ay는 아래(+y), ax는 오른쪽(+x) → 텍스처 상하/좌우 뒤집힘 방지
+  if (ay[1] < 0) ay = [-ay[0], -ay[1]];
+  if (ax[0] < 0) ax = [-ax[0], -ax[1]];
   const lenA = Math.hypot(ax[0], ax[1]);
   const lenB = Math.hypot(ay[0], ay[1]);
   return { cx: c[0], cy: c[1], ax, ay, r: (lenA + lenB) / 2 };
