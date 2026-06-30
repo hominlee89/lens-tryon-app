@@ -133,9 +133,16 @@ function drawTextureLens(lensImg, geo, contourIndices, landmarks, w, h) {
   ctx.beginPath(); ctx.arc(0, 0, 1.12, 0, Math.PI*2);
   ctx.fillStyle = cs; ctx.fill();
 
-  // 2. 렌즈 텍스처 본체
-  ctx.globalAlpha = 0.92;
+  // 2. 렌즈 텍스처 본체 (2패스 — 평면 스티커 느낌 제거)
+  //    2a. source-over 0.80: 색+패턴을 깔되 반투명 → 실제 홍채가 비쳐 보임
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.80;
   ctx.drawImage(lensImg, -1, -1, 2, 2);
+  //    2b. multiply 0.24: 패턴/림벌이 홍채 질감·주름을 따라 어두워짐 → 깊이감
+  ctx.globalCompositeOperation = "multiply";
+  ctx.globalAlpha = 0.24;
+  ctx.drawImage(lensImg, -1, -1, 2, 2);
+  ctx.globalCompositeOperation = "source-over";
 
   // 3. 이중 캐치라이트 (점광원 반사 — 촉촉한 눈). 단위원 좌표라 같이 변형됨
   ctx.globalAlpha = 0.6;
@@ -262,7 +269,7 @@ async function setupFaceLandmarker() {
 
 async function setupCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
     audio: false,
   });
   video.srcObject = stream;
