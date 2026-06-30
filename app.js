@@ -59,26 +59,27 @@ function pointInPolygon(px, py, poly) {
   return inside;
 }
 
-// ── 홍채 기하 계산: 4 경계점 → 타원(rx, ry) ─────────────────────────────────
+// ── 홍채 기하 계산: 4 경계점 → 축 벡터 2개 (affine 타원) ─────────────────────
+// 고개를 돌리면 홍채 경계점이 원근감으로 찌그러짐 → 축 벡터가 그대로 yaw/pitch/roll 반영
 function irisGeometry(lm, indices, w, h) {
-  const c  = lm[indices[0]];
-  const cx = w - c.x * w;
-  const cy = c.y * h;
-  // indices: [center, right, bottom, left, top]
-  const right  = lm[indices[1]]; // x 최대
-  const bottom = lm[indices[2]]; // y 최대
-  const left   = lm[indices[3]]; // x 최소
-  const top    = lm[indices[4]]; // y 최소
-  const rx = ((w - right.x*w) - (w - left.x*w)) / 2;   // 수평 반지름
-  const ry = (bottom.y*h - top.y*h) / 2;                // 수직 반지름
-  return { cx, cy, rx: Math.abs(rx), ry: Math.abs(ry), r: (Math.abs(rx)+Math.abs(ry))/2 };
+  // 화면 좌표(미러 적용)로 변환
+  const P = i => { const p = lm[indices[i]]; return [w - p.x*w, p.y*h]; };
+  const c = P(0);
+  // indices[1..4]: 원 둘레의 4점, 마주보는 쌍 = (1,3), (2,4)
+  const p1 = P(1), p2 = P(2), p3 = P(3), p4 = P(4);
+  // 반(half) 축 벡터
+  const ax = [(p1[0]-p3[0])/2, (p1[1]-p3[1])/2]; // 한 지름의 절반
+  const ay = [(p2[0]-p4[0])/2, (p2[1]-p4[1])/2]; // 직교 지름의 절반
+  const lenA = Math.hypot(ax[0], ax[1]);
+  const lenB = Math.hypot(ay[0], ay[1]);
+  return { cx: c[0], cy: c[1], ax, ay, r: (lenA + lenB) / 2 };
 }
 
-// ── Mode A: 실제 텍스처 렌즈 ────────────────────────────────────────────────
-function drawTextureLens(lensImg, geo, tintRgb, contourIndices, landmarks, w, h) {
+// ── Mode A: 실제 텍스처 렌즈 (affine 타원 — 얼굴 각도 자동 보정) ────────────
+function drawTextureLens(lensImg, geo, contourIndices, landmarks, w, h) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-  const { cx, cy, r } = geo;
-  const size = r * 1.28 * 2;
+  const { cx, cy, ax, ay, r } = geo;
+  const scale = 1.28; // 홍채보다 살짝 크게
 
   ctx.save();
 
@@ -92,13 +93,26 @@ function drawTextureLens(lensImg, geo, tintRgb, contourIndices, landmarks, w, h)
   ctx.closePath();
   ctx.clip();
 
-  // 렌즈 텍스처 합성 (텍스처 자체에 색/투명동공/림벌링이 모두 포함됨)
-  // source-over: 반투명 색 영역이 실제 홍채 위에 자연스럽게 얹힘, 동공은 투명
+  // 축 벡터로 affine 변환 구성: 단위원 → 실제 홍채 타원(각도 포함)
+  // 텍스처는 [-1,1] 범위에 그려지므로 축 벡터에 scale 적용
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 0.92;
-  ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
+  ctx.translate(cx, cy);
+  ctx.transform(ax[0]*scale, ax[1]*scale, ay[0]*scale, ay[1]*scale, 0, 0);
+  ctx.drawImage(lensImg, -1, -1, 2, 2);
 
-  // 작은 캐치라이트 (눈동자 위 점광원 반사 — 습윤감, 자연스러움의 핵심)
+  ctx.restore();
+
+  // 작은 캐치라이트 (점광원 반사 — 습윤감). 화면 좌표에서 그림
+  ctx.save();
+  ctx.beginPath();
+  contourIndices.forEach((idx, i) => {
+    const p = landmarks[idx];
+    const x = w - p.x * w, y = p.y * h;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.clip();
   ctx.globalAlpha = 0.55;
   const hx = cx - r*0.22, hy = cy - r*0.26;
   const spec = ctx.createRadialGradient(hx, hy, 0, hx, hy, r*0.14);
@@ -108,7 +122,6 @@ function drawTextureLens(lensImg, geo, tintRgb, contourIndices, landmarks, w, h)
   ctx.arc(hx, hy, r*0.14, 0, Math.PI*2);
   ctx.fillStyle = spec;
   ctx.fill();
-
   ctx.restore();
 }
 
@@ -258,9 +271,8 @@ function renderLoop() {
 
   if (activeProduct.texture && lensImages[activeProduct.id]) {
     const img = lensImages[activeProduct.id];
-    const tint = activeProduct.baseColor || null;
-    drawTextureLens(img, leftGeo,  tint, LEFT_EYE_CONTOUR,  lm, w, h);
-    drawTextureLens(img, rightGeo, tint, RIGHT_EYE_CONTOUR, lm, w, h);
+    drawTextureLens(img, leftGeo,  LEFT_EYE_CONTOUR,  lm, w, h);
+    drawTextureLens(img, rightGeo, RIGHT_EYE_CONTOUR, lm, w, h);
   } else if (activeProduct.color) {
     tintIris(leftGeo.cx,  leftGeo.cy,  leftGeo.r,  activeProduct.color, LEFT_EYE_CONTOUR,  lm, w, h);
     tintIris(rightGeo.cx, rightGeo.cy, rightGeo.r, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
