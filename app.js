@@ -13,8 +13,6 @@ const captureBtn    = document.getElementById("capture-btn");
 
 const LEFT_IRIS  = [468, 469, 470, 471, 472];
 const RIGHT_IRIS = [473, 474, 475, 476, 477];
-
-// Eye-opening contour (upper + lower eyelid boundary)
 const LEFT_EYE_CONTOUR  = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
 const RIGHT_EYE_CONTOUR = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382];
 
@@ -23,10 +21,152 @@ let products = [];
 let activeProduct = null;
 let lastVideoTime = -1;
 
+// ── Color math ──────────────────────────────────────────────────────────────
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h;
+  if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else                h = ((r - g) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  if (s === 0) { const v = Math.round(l * 255); return [v, v, v]; }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue = (t) => {
+    if (t < 0) t += 1; if (t > 1) t -= 1;
+    if (t < 1/6) return p + (q - p) * 6 * t;
+    if (t < 1/2) return q;
+    if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+    return p;
+  };
+  return [Math.round(hue(h+1/3)*255), Math.round(hue(h)*255), Math.round(hue(h-1/3)*255)];
+}
+
+// Ray-casting point-in-polygon
+function pointInPolygon(px, py, poly) {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [xi, yi] = poly[i], [xj, yj] = poly[j];
+    if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi))
+      inside = !inside;
+  }
+  return inside;
+}
+
+// ── Main iris tinting ────────────────────────────────────────────────────────
+
+function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
+  const pupilR = irisR * 0.42;
+
+  // Precompute eyelid polygon (mirrored x)
+  const polygon = contourIndices.map(idx => {
+    const p = landmarks[idx];
+    return [w - p.x * w, p.y * h];
+  });
+
+  // Target color in HSL
+  const [tH, tS, tL] = rgbToHsl(...targetRgb);
+
+  // Bounding box
+  const x0 = Math.max(0, Math.floor(cx - irisR - 2));
+  const y0 = Math.max(0, Math.floor(cy - irisR - 2));
+  const x1 = Math.min(w, Math.ceil(cx + irisR + 2));
+  const y1 = Math.min(h, Math.ceil(cy + irisR + 2));
+  const bw = x1 - x0, bh = y1 - y0;
+  if (bw <= 0 || bh <= 0) return;
+
+  const imageData = ctx.getImageData(x0, y0, bw, bh);
+  const d = imageData.data;
+
+  for (let py = 0; py < bh; py++) {
+    for (let px = 0; px < bw; px++) {
+      const wx = x0 + px, wy = y0 + py;
+      const dx = wx - cx, dy = wy - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      // Only inside iris ring
+      if (dist < pupilR * 0.88 || dist > irisR * 1.01) continue;
+
+      // Must be inside eye opening (eyelid clip)
+      if (!pointInPolygon(wx, wy, polygon)) continue;
+
+      const i = (py * bw + px) * 4;
+      const [pH, pS, pL] = rgbToHsl(d[i], d[i+1], d[i+2]);
+
+      // Blend strength: soft fade at pupil edge and iris outer edge
+      const outerFade = Math.min(1, (irisR - dist) / (irisR * 0.13));
+      const innerFade = Math.min(1, (dist - pupilR * 0.88) / (pupilR * 0.30));
+      const strength  = outerFade * innerFade * 0.92;
+
+      // Hue: fully shift to target
+      const newH = tH;
+
+      // Saturation: blend toward target
+      const newS = pS + (Math.max(tS, 0.45) - pS) * strength;
+
+      // Lightness: dark irises need a brightness boost so color actually shows
+      // The darker the pixel, the more we lift it toward the target lightness
+      const darkBoost = (1 - pL) * 0.55; // dark pixels get more lift
+      const targetL   = tL * 0.75 + 0.18; // aim for mid-brightness
+      const newL      = pL + (targetL - pL + darkBoost) * strength;
+
+      const [nr, ng, nb] = hslToRgb(
+        pH + (newH - pH) * strength,
+        newS,
+        Math.min(0.72, newL)
+      );
+
+      d[i]   = nr;
+      d[i+1] = ng;
+      d[i+2] = nb;
+      // alpha stays untouched (d[i+3])
+    }
+  }
+
+  ctx.putImageData(imageData, x0, y0);
+
+  // Limbal ring: crisp dark circle at iris edge, clipped to eyelid
+  ctx.save();
+  ctx.beginPath();
+  polygon.forEach(([x, y], i) => i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y));
+  ctx.closePath();
+  ctx.clip();
+
+  // Outer dark limbal ring
+  ctx.beginPath();
+  ctx.arc(cx, cy, irisR * 0.96, 0, Math.PI * 2);
+  ctx.strokeStyle = "rgba(6,4,2,0.82)";
+  ctx.lineWidth = irisR * 0.11;
+  ctx.stroke();
+
+  // Subtle inner bright highlight (makes lens look glossy / 3D)
+  const hx = cx - irisR * 0.22, hy = cy - irisR * 0.25;
+  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, irisR * 0.38);
+  glow.addColorStop(0,   "rgba(255,255,255,0.18)");
+  glow.addColorStop(1,   "rgba(255,255,255,0)");
+  ctx.globalCompositeOperation = "screen";
+  ctx.beginPath();
+  ctx.arc(cx, cy, irisR, 0, Math.PI * 2);
+  ctx.fillStyle = glow;
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// ── Setup ────────────────────────────────────────────────────────────────────
+
 async function loadProducts() {
   const res = await fetch("products.json");
   products = await res.json();
-
   productListEl.innerHTML = "";
   products.forEach((p) => {
     const card = document.createElement("div");
@@ -38,8 +178,7 @@ async function loadProducts() {
         <p class="product-name">${p.name}</p>
         <p class="product-meta">${p.category} · DIA ${p.dia}</p>
         <p class="product-price">${p.price}</p>
-      </div>
-    `;
+      </div>`;
     card.addEventListener("click", () => selectProduct(p.id));
     productListEl.appendChild(card);
   });
@@ -47,9 +186,8 @@ async function loadProducts() {
 
 function selectProduct(id) {
   activeProduct = products.find((p) => p.id === id) || null;
-  document.querySelectorAll(".product-card").forEach((el) => {
-    el.classList.toggle("active", el.dataset.id === id);
-  });
+  document.querySelectorAll(".product-card").forEach((el) =>
+    el.classList.toggle("active", el.dataset.id === id));
 }
 
 async function setupFaceLandmarker() {
@@ -71,99 +209,38 @@ async function setupFaceLandmarker() {
 
 async function setupCamera() {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
     audio: false,
   });
   video.srcObject = stream;
-  await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
+  await new Promise((r) => { video.onloadedmetadata = r; });
   video.play();
   canvas.width  = video.videoWidth;
   canvas.height = video.videoHeight;
 }
 
 function irisCenterAndRadius(landmarks, indices, w, h) {
-  const center = landmarks[indices[0]];
-  const cx = center.x * w;
-  const cy = center.y * h;
-  let radius = 0;
+  const c = landmarks[indices[0]];
+  const cx = c.x * w, cy = c.y * h;
+  let r = 0;
   for (let i = 1; i < indices.length; i++) {
     const p = landmarks[indices[i]];
-    const dx = p.x * w - cx;
-    const dy = p.y * h - cy;
-    radius += Math.sqrt(dx * dx + dy * dy);
+    r += Math.sqrt((p.x*w-cx)**2 + (p.y*h-cy)**2);
   }
-  radius /= indices.length - 1;
-  return { cx, cy, radius };
+  return { cx, cy, radius: r / (indices.length - 1) };
 }
 
-function clipToEye(contourIndices, landmarks, w, h) {
-  ctx.beginPath();
-  contourIndices.forEach((idx, i) => {
-    const pt = landmarks[idx];
-    const x = w - pt.x * w; // mirrored
-    const y = pt.y * h;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.clip();
-}
-
-function drawLensOnIris(cx, cy, irisR, color, contourIndices, landmarks, w, h) {
-  const [r, g, b] = color;
-  const pupilR = irisR * 0.42; // estimated pupil ≈ 42% of iris radius
-
-  ctx.save();
-  clipToEye(contourIndices, landmarks, w, h);
-
-  // ── 1. Color tint via 'screen' blend ─────────────────────────────
-  // screen: result = 1-(1-src)(1-dst)  → adds color to dark iris naturally
-  ctx.globalCompositeOperation = "screen";
-
-  const grad = ctx.createRadialGradient(cx, cy, pupilR * 0.85, cx, cy, irisR * 1.02);
-  grad.addColorStop(0.00, `rgba(${r},${g},${b},0)`);
-  grad.addColorStop(0.15, `rgba(${r},${g},${b},0.70)`);
-  grad.addColorStop(0.55, `rgba(${r},${g},${b},0.78)`);
-  grad.addColorStop(0.85, `rgba(${r},${g},${b},0.60)`);
-  grad.addColorStop(1.00, `rgba(${r},${g},${b},0)`);
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, irisR * 1.05, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
-  ctx.fill();
-
-  // ── 2. Limbal ring — dark edge defining the lens boundary ─────────
-  ctx.globalCompositeOperation = "source-over";
-  ctx.beginPath();
-  ctx.arc(cx, cy, irisR * 0.97, 0, Math.PI * 2);
-  ctx.strokeStyle = `rgba(8, 5, 3, 0.72)`;
-  ctx.lineWidth = irisR * 0.10;
-  ctx.stroke();
-
-  // ── 3. Subtle inner iris highlight (adds depth, mimics real lens) ─
-  ctx.globalCompositeOperation = "screen";
-  const innerGrad = ctx.createRadialGradient(cx, cy, pupilR, cx, cy, irisR * 0.6);
-  innerGrad.addColorStop(0,   `rgba(${r},${g},${b},0)`);
-  innerGrad.addColorStop(0.5, `rgba(255,255,255,0.06)`);
-  innerGrad.addColorStop(1,   `rgba(255,255,255,0)`);
-  ctx.beginPath();
-  ctx.arc(cx, cy, irisR * 0.6, 0, Math.PI * 2);
-  ctx.fillStyle = innerGrad;
-  ctx.fill();
-
-  ctx.restore();
-}
+// ── Render loop ──────────────────────────────────────────────────────────────
 
 function renderLoop() {
   requestAnimationFrame(renderLoop);
-
   if (!faceLandmarker || video.readyState < 2) return;
   if (video.currentTime === lastVideoTime) return;
   lastVideoTime = video.currentTime;
 
-  const w = canvas.width;
-  const h = canvas.height;
+  const w = canvas.width, h = canvas.height;
 
-  // Draw mirrored video frame
+  // Draw mirrored video
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
@@ -172,7 +249,7 @@ function renderLoop() {
 
   const result = faceLandmarker.detectForVideo(video, performance.now());
 
-  if (!result.faceLandmarks || result.faceLandmarks.length === 0) {
+  if (!result.faceLandmarks?.length) {
     statusEl.style.display = "block";
     statusEl.textContent = "얼굴을 카메라 앞에 위치시켜 주세요";
     return;
@@ -180,14 +257,15 @@ function renderLoop() {
   statusEl.style.display = "none";
   if (!activeProduct) return;
 
-  const landmarks = result.faceLandmarks[0];
-  const left  = irisCenterAndRadius(landmarks, LEFT_IRIS,  w, h);
-  const right = irisCenterAndRadius(landmarks, RIGHT_IRIS, w, h);
+  const lm = result.faceLandmarks[0];
+
+  const left  = irisCenterAndRadius(lm, LEFT_IRIS,  w, h);
+  const right = irisCenterAndRadius(lm, RIGHT_IRIS, w, h);
   left.cx  = w - left.cx;
   right.cx = w - right.cx;
 
-  drawLensOnIris(left.cx,  left.cy,  left.radius,  activeProduct.color, LEFT_EYE_CONTOUR,  landmarks, w, h);
-  drawLensOnIris(right.cx, right.cy, right.radius, activeProduct.color, RIGHT_EYE_CONTOUR, landmarks, w, h);
+  tintIris(left.cx,  left.cy,  left.radius,  activeProduct.color, LEFT_EYE_CONTOUR,  lm, w, h);
+  tintIris(right.cx, right.cy, right.radius, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
 }
 
 function capture() {
@@ -205,10 +283,8 @@ async function init() {
   captureBtn.addEventListener("click", capture);
   await loadProducts();
   if (products.length > 0) selectProduct(products[0].id);
-
   statusEl.textContent = "모델 로딩 중...";
   await setupFaceLandmarker();
-
   statusEl.textContent = "카메라 권한을 허용해 주세요";
   try {
     await setupCamera();
@@ -216,7 +292,6 @@ async function init() {
     statusEl.textContent = "카메라 접근 실패: " + err.message;
     return;
   }
-
   renderLoop();
 }
 
