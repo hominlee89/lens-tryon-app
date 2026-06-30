@@ -1,5 +1,15 @@
 [
   {
+    "id": "zeroturn",
+    "name": "제로턴 브라운",
+    "category": "1DAY 서클렌즈",
+    "dia": "14.2mm",
+    "bc": "8.6mm",
+    "price": "30,000원",
+    "texture": "assets/lens_zeroturn.png",
+    "swatch": "#8b6545"
+  },
+  {
     "id": "natural-brown",
     "name": "내추럴 브라운",
     "category": "내추럴 렌즈",
