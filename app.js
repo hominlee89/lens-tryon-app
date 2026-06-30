@@ -25,6 +25,25 @@ let activeProduct = null;
 const lensImages = {};
 let lastVideoTime = -1;
 
+// ── 시간적 스무딩 상태 (떨림 제거) ──────────────────────────────────────────
+const smoothState = { left: null, right: null };
+const SMOOTH = 0.45; // 0=고정(지연 큼) ~ 1=즉시(떨림). 0.45=안정+반응 균형
+
+function smoothGeo(side, geo) {
+  const prev = smoothState[side];
+  if (!prev) { smoothState[side] = geo; return geo; }
+  const a = SMOOTH, b = 1 - a;
+  const out = {
+    cx: prev.cx*b + geo.cx*a,
+    cy: prev.cy*b + geo.cy*a,
+    ax: [prev.ax[0]*b + geo.ax[0]*a, prev.ax[1]*b + geo.ax[1]*a],
+    ay: [prev.ay[0]*b + geo.ay[0]*a, prev.ay[1]*b + geo.ay[1]*a],
+    r:  prev.r*b + geo.r*a,
+  };
+  smoothState[side] = out;
+  return out;
+}
+
 // ── RGB ↔ HSL ─────────────────────────────────────────────────────────────────
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
@@ -94,34 +113,36 @@ function drawTextureLens(lensImg, geo, contourIndices, landmarks, w, h) {
   ctx.clip();
 
   // 축 벡터로 affine 변환 구성: 단위원 → 실제 홍채 타원(각도 포함)
-  // 텍스처는 [-1,1] 범위에 그려지므로 축 벡터에 scale 적용
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.92;
   ctx.translate(cx, cy);
   ctx.transform(ax[0]*scale, ax[1]*scale, ay[0]*scale, ay[1]*scale, 0, 0);
+  // 이후 모든 그리기는 단위원 좌표계 → 타원/회전 자동 적용
+
+  // 1. 컨택트 섀도우 (렌즈 가장자리 바깥쪽 옅은 그림자 → 눈 위에 "앉은" 깊이감)
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.22;
+  const cs = ctx.createRadialGradient(0, 0, 0.92, 0, 0, 1.12);
+  cs.addColorStop(0, "rgba(0,0,0,0)");
+  cs.addColorStop(0.6, "rgba(30,20,12,0.5)");
+  cs.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.beginPath(); ctx.arc(0, 0, 1.12, 0, Math.PI*2);
+  ctx.fillStyle = cs; ctx.fill();
+
+  // 2. 렌즈 텍스처 본체
+  ctx.globalAlpha = 0.92;
   ctx.drawImage(lensImg, -1, -1, 2, 2);
 
-  ctx.restore();
+  // 3. 이중 캐치라이트 (점광원 반사 — 촉촉한 눈). 단위원 좌표라 같이 변형됨
+  ctx.globalAlpha = 0.6;
+  const drawSpec = (sx, sy, sr, alpha) => {
+    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+    g.addColorStop(0, `rgba(255,255,255,${alpha})`);
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI*2);
+    ctx.fillStyle = g; ctx.fill();
+  };
+  drawSpec(-0.28, -0.32, 0.18, 0.9);   // 주 반사 (좌상단)
+  drawSpec( 0.18,  0.12, 0.08, 0.45);  // 보조 반사 (우하단, 작게)
 
-  // 작은 캐치라이트 (점광원 반사 — 습윤감). 화면 좌표에서 그림
-  ctx.save();
-  ctx.beginPath();
-  contourIndices.forEach((idx, i) => {
-    const p = landmarks[idx];
-    const x = w - p.x * w, y = p.y * h;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.clip();
-  ctx.globalAlpha = 0.55;
-  const hx = cx - r*0.22, hy = cy - r*0.26;
-  const spec = ctx.createRadialGradient(hx, hy, 0, hx, hy, r*0.14);
-  spec.addColorStop(0, "rgba(255,255,255,0.85)");
-  spec.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.beginPath();
-  ctx.arc(hx, hy, r*0.14, 0, Math.PI*2);
-  ctx.fillStyle = spec;
-  ctx.fill();
   ctx.restore();
 }
 
@@ -266,8 +287,8 @@ function renderLoop() {
   if (!activeProduct) return;
 
   const lm = result.faceLandmarks[0];
-  const leftGeo  = irisGeometry(lm, LEFT_IRIS,  w, h);
-  const rightGeo = irisGeometry(lm, RIGHT_IRIS, w, h);
+  const leftGeo  = smoothGeo("left",  irisGeometry(lm, LEFT_IRIS,  w, h));
+  const rightGeo = smoothGeo("right", irisGeometry(lm, RIGHT_IRIS, w, h));
 
   if (activeProduct.texture && lensImages[activeProduct.id]) {
     const img = lensImages[activeProduct.id];
