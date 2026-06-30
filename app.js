@@ -6,33 +6,33 @@ import {
 const video = document.getElementById("video");
 const canvas = document.getElementById("overlay");
 const ctx = canvas.getContext("2d");
-// video element is hidden; we draw it onto canvas every frame
 video.style.display = "none";
 const statusEl = document.getElementById("status");
 const productListEl = document.getElementById("product-list");
 const captureBtn = document.getElementById("capture-btn");
 
-// Iris landmark indices (MediaPipe FaceMesh, refineLandmarks = true)
-// center, then 4 boundary points around the iris
-const LEFT_IRIS = [468, 469, 470, 471, 472];
+// Iris landmarks (refineLandmarks=true): center + 4 boundary points
+const LEFT_IRIS  = [468, 469, 470, 471, 472];
 const RIGHT_IRIS = [473, 474, 475, 476, 477];
+
+// Eye-opening contour landmarks (traces upper + lower eyelid boundary)
+const LEFT_EYE_CONTOUR  = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
+const RIGHT_EYE_CONTOUR = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382];
 
 let faceLandmarker = null;
 let products = [];
 let activeProduct = null;
-const lensImages = {}; // id -> HTMLImageElement
+const lensImages = {};
 let lastVideoTime = -1;
 
 async function loadProducts() {
   const res = await fetch("products.json");
   products = await res.json();
-
   products.forEach((p) => {
     const img = new Image();
     img.src = p.texture;
     lensImages[p.id] = img;
   });
-
   productListEl.innerHTML = "";
   products.forEach((p) => {
     const card = document.createElement("div");
@@ -81,9 +81,7 @@ async function setupCamera() {
     audio: false,
   });
   video.srcObject = stream;
-  await new Promise((resolve) => {
-    video.onloadedmetadata = () => resolve();
-  });
+  await new Promise((resolve) => { video.onloadedmetadata = () => resolve(); });
   video.play();
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -104,13 +102,32 @@ function irisCenterAndRadius(landmarks, indices, w, h) {
   return { cx, cy, radius };
 }
 
-function drawLensOnEye(lensImg, cx, cy, radius) {
+// Clip canvas to eye-opening shape, draw lens inside, then restore
+function drawLensWithEyeClip(lensImg, irisX, irisY, radius, contourIndices, landmarks, w, h) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-  // Lens PNG: colored zone outer edge = 41% of half-image = 328/400 = 0.82 ratio
-  // To map colored zone exactly onto detected iris: scale = 1/0.82 = 1.22
+
+  // Lens PNG: colored zone = 41% of half-image → scale = 1/0.82 = 1.22 to match iris
   const scale = 1.22;
   const size = radius * scale * 2;
-  ctx.drawImage(lensImg, cx - size / 2, cy - size / 2, size, size);
+
+  ctx.save();
+
+  // Build eyelid clipping path (mirrored x)
+  ctx.beginPath();
+  contourIndices.forEach((idx, i) => {
+    const pt = landmarks[idx];
+    const x = w - pt.x * w;
+    const y = pt.y * h;
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.closePath();
+  ctx.clip(); // lens only renders inside the eye opening
+
+  ctx.globalAlpha = 0.93;
+  ctx.drawImage(lensImg, irisX - size / 2, irisY - size / 2, size, size);
+
+  ctx.restore();
 }
 
 function renderLoop() {
@@ -123,7 +140,7 @@ function renderLoop() {
   const w = canvas.width;
   const h = canvas.height;
 
-  // Draw mirrored video frame as background
+  // Draw mirrored video as background
   ctx.save();
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
@@ -145,22 +162,19 @@ function renderLoop() {
 
   const landmarks = result.faceLandmarks[0];
 
-  // Mirror x-coordinate to match the flipped video
-  const left = irisCenterAndRadius(landmarks, LEFT_IRIS, w, h);
+  const left  = irisCenterAndRadius(landmarks, LEFT_IRIS,  w, h);
   const right = irisCenterAndRadius(landmarks, RIGHT_IRIS, w, h);
-  left.cx = w - left.cx;
+
+  // Mirror iris centers to match flipped video
+  left.cx  = w - left.cx;
   right.cx = w - right.cx;
 
-  // source-over: lens PNG is already semi-transparent ring, pupil hole shows real eye
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.92;
-  drawLensOnEye(lensImg, left.cx, left.cy, left.radius);
-  drawLensOnEye(lensImg, right.cx, right.cy, right.radius);
-  ctx.globalAlpha = 1.0;
+  // Draw each lens clipped to its eyelid opening
+  drawLensWithEyeClip(lensImg, left.cx,  left.cy,  left.radius,  LEFT_EYE_CONTOUR,  landmarks, w, h);
+  drawLensWithEyeClip(lensImg, right.cx, right.cy, right.radius, RIGHT_EYE_CONTOUR, landmarks, w, h);
 }
 
 function capture() {
-  // canvas already contains video + lens composite
   canvas.toBlob((blob) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
