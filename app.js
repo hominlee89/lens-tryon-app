@@ -77,9 +77,14 @@ function drawTextureLens(lensImg, cx, cy, irisR, contourIndices, landmarks, w, h
   ctx.closePath();
   ctx.clip();
 
-  // 렌즈 텍스처 합성 (multiply: 렌즈 패턴이 실제 홍채에 자연스럽게 녹아듦)
-  ctx.globalCompositeOperation = "multiply";
-  ctx.globalAlpha = 0.90;
+  // 1단계: 홍채 먼저 밝히기 (어두운 눈에서 렌즈 색이 보이도록)
+  ctx.globalCompositeOperation = "screen";
+  ctx.globalAlpha = 0.45;
+  ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
+
+  // 2단계: 실제 렌즈 패턴 합성
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.72;
   ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
 
   // 동공 위에 살짝 하이라이트 (광택감)
