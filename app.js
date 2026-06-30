@@ -77,14 +77,9 @@ function drawTextureLens(lensImg, cx, cy, irisR, contourIndices, landmarks, w, h
   ctx.closePath();
   ctx.clip();
 
-  // 1단계: 홍채 먼저 밝히기 (어두운 눈에서 렌즈 색이 보이도록)
-  ctx.globalCompositeOperation = "screen";
-  ctx.globalAlpha = 0.45;
-  ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
-
-  // 2단계: 실제 렌즈 패턴 합성
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.72;
+  // tintIris가 이미 색+밝기를 입혔으므로, 여기선 도트/패턴 텍스처만 multiply로 올림
+  ctx.globalCompositeOperation = "multiply";
+  ctx.globalAlpha = 0.88;
   ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
 
   // 동공 위에 살짝 하이라이트 (광택감)
@@ -135,10 +130,10 @@ function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
       const innerFade = Math.min(1,(dist-pupilR*0.88)/(pupilR*0.30));
       const strength  = outerFade*innerFade*0.92;
       const newS = pS+(Math.max(tS,0.45)-pS)*strength;
-      const darkBoost = (1-pL)*0.55;
-      const targetL = tL*0.75+0.18;
+      const darkBoost = (1-pL)*0.82; // 어두운 눈일수록 강하게 밝힘
+      const targetL = Math.max(0.40, tL*0.8+0.15); // 최소 밝기 보장
       const newL = pL+(targetL-pL+darkBoost)*strength;
-      const [nr,ng,nb] = hslToRgb(pH+(tH-pH)*strength, newS, Math.min(0.72,newL));
+      const [nr,ng,nb] = hslToRgb(pH+(tH-pH)*strength, newS, Math.min(0.75,newL));
       d[i]=nr; d[i+1]=ng; d[i+2]=nb;
     }
   }
@@ -261,12 +256,15 @@ function renderLoop() {
   right.cx = w - right.cx;
 
   if (activeProduct.texture && lensImages[activeProduct.id]) {
-    // 실제 제품 텍스처 모드
     const img = lensImages[activeProduct.id];
+    const base = activeProduct.baseColor;
+    // 1단계: 픽셀 조작으로 홍채 색+밝기 강하게 변환
+    tintIris(left.cx,  left.cy,  left.radius,  base, LEFT_EYE_CONTOUR,  lm, w, h);
+    tintIris(right.cx, right.cy, right.radius, base, RIGHT_EYE_CONTOUR, lm, w, h);
+    // 2단계: 실제 렌즈 텍스처를 multiply로 → 도트/패턴만 입힘 (색은 1단계가 처리)
     drawTextureLens(img, left.cx,  left.cy,  left.radius,  LEFT_EYE_CONTOUR,  lm, w, h);
     drawTextureLens(img, right.cx, right.cy, right.radius, RIGHT_EYE_CONTOUR, lm, w, h);
   } else if (activeProduct.color) {
-    // HSL 픽셀 색상 모드
     tintIris(left.cx,  left.cy,  left.radius,  activeProduct.color, LEFT_EYE_CONTOUR,  lm, w, h);
     tintIris(right.cx, right.cy, right.radius, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
   }

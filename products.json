@@ -7,6 +7,7 @@
     "bc": "8.6mm",
     "price": "30,000원",
     "texture": "assets/lens_zeroturn.png",
+    "baseColor": [175, 115, 55],
     "swatch": "#8b6545"
   },
   {
@@ -17,6 +18,7 @@
     "bc": "8.6mm",
     "price": "30,000원",
     "texture": "assets/lens_zeroturn2.png",
+    "baseColor": [70, 118, 172],
     "swatch": "#4a7fa8"
   },
   {
