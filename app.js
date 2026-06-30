@@ -106,7 +106,7 @@ function irisCenterAndRadius(landmarks, indices, w, h) {
 
 function drawLensOnEye(lensImg, cx, cy, radius) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-  const scale = 2.1; // lens slightly larger than detected iris radius for natural coverage
+  const scale = 2.6; // lens covers full iris — MediaPipe iris radius ≈ half the real iris
   const size = radius * scale * 2;
   ctx.drawImage(lensImg, cx - size / 2, cy - size / 2, size, size);
 }
@@ -149,12 +149,11 @@ function renderLoop() {
   left.cx = w - left.cx;
   right.cx = w - right.cx;
 
-  // Blend lens with 'multiply' so the real iris/pupil underneath shows through naturally
-  ctx.globalCompositeOperation = "multiply";
-  ctx.globalAlpha = 0.88;
+  // source-over: lens PNG is already semi-transparent ring, pupil hole shows real eye
+  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 0.92;
   drawLensOnEye(lensImg, left.cx, left.cy, left.radius);
   drawLensOnEye(lensImg, right.cx, right.cy, right.radius);
-  ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1.0;
 }
 
