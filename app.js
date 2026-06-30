@@ -11,10 +11,36 @@ const statusEl      = document.getElementById("status");
 const productListEl = document.getElementById("product-list");
 const captureBtn    = document.getElementById("capture-btn");
 
+// ── 홍채 랜드마크: center + right + bottom + left + top ───────────────────────
 const LEFT_IRIS  = [468, 469, 470, 471, 472];
 const RIGHT_IRIS = [473, 474, 475, 476, 477];
-const LEFT_EYE_CONTOUR  = [33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, 145, 144, 163, 7];
-const RIGHT_EYE_CONTOUR = [362, 398, 384, 385, 386, 387, 388, 466, 263, 249, 390, 373, 374, 380, 381, 382];
+
+// ── 눈꺼풀 컨투어: 40점 (기존 16 → 확장) ────────────────────────────────────
+// MediaPipe 468점 메시에서 눈 테두리를 더 촘촘하게 추출
+const LEFT_EYE_CONTOUR = [
+  // 상안검 (위 눈꺼풀)
+  246, 161, 160, 159, 158, 157, 173,
+  // 외안각 → 내안각 (아래 눈꺼풀)
+  133, 155, 154, 153, 145, 144, 163, 7, 33,
+  // 추가 외곽 보조점 (눈 주변 윤곽 보강)
+  130, 25, 110, 24, 23, 22, 26, 112,
+  // 내안각 세밀화
+  243, 190, 56, 28, 27, 29, 30, 247,
+  // 눈 아래 추가
+  226, 31, 228, 229, 230, 231, 232, 233,
+];
+const RIGHT_EYE_CONTOUR = [
+  // 상안검
+  466, 388, 387, 386, 385, 384, 398,
+  // 외안각 → 내안각
+  362, 382, 381, 380, 374, 373, 390, 249, 263,
+  // 추가 외곽 보조점
+  359, 255, 339, 254, 253, 252, 256, 341,
+  // 내안각 세밀화
+  463, 414, 286, 258, 257, 259, 260, 467,
+  // 눈 아래 추가
+  446, 261, 448, 449, 450, 451, 452, 453,
+];
 
 let faceLandmarker = null;
 let products = [];
@@ -22,7 +48,16 @@ let activeProduct = null;
 const lensImages = {};
 let lastVideoTime = -1;
 
-// ── Color math ────────────────────────────────────────────────────────────────
+// 오프스크린 캔버스 (재사용)
+let offCanvas = null;
+function getOffCanvas(w, h) {
+  if (!offCanvas) offCanvas = document.createElement("canvas");
+  offCanvas.width = w;
+  offCanvas.height = h;
+  return offCanvas;
+}
+
+// ── RGB ↔ HSL ─────────────────────────────────────────────────────────────────
 function rgbToHsl(r, g, b) {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r,g,b), min = Math.min(r,g,b), l = (max+min)/2;
@@ -56,53 +91,98 @@ function pointInPolygon(px, py, poly) {
   return inside;
 }
 
-// ── Mode A: 실제 제품 텍스처 PNG 합성 ────────────────────────────────────────
-function drawTextureLens(lensImg, cx, cy, irisR, contourIndices, landmarks, w, h) {
+// ── 홍채 기하 계산: 4 경계점 → 타원(rx, ry) ─────────────────────────────────
+function irisGeometry(lm, indices, w, h) {
+  const c  = lm[indices[0]];
+  const cx = w - c.x * w;
+  const cy = c.y * h;
+  // indices: [center, right, bottom, left, top]
+  const right  = lm[indices[1]]; // x 최대
+  const bottom = lm[indices[2]]; // y 최대
+  const left   = lm[indices[3]]; // x 최소
+  const top    = lm[indices[4]]; // y 최소
+  const rx = ((w - right.x*w) - (w - left.x*w)) / 2;   // 수평 반지름
+  const ry = (bottom.y*h - top.y*h) / 2;                // 수직 반지름
+  return { cx, cy, rx: Math.abs(rx), ry: Math.abs(ry), r: (Math.abs(rx)+Math.abs(ry))/2 };
+}
+
+// ── Mode A: 실제 텍스처 렌즈 (오프스크린 캔버스 + 소프트 마스킹) ──────────────
+function drawTextureLens(lensImg, geo, contourIndices, landmarks, w, h) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
-
+  const { cx, cy, rx, ry, r } = geo;
   const scale = 1.28;
-  const size  = irisR * scale * 2;
+  const sw = rx * scale * 2;
+  const sh = ry * scale * 2;
 
+  // ── 오프스크린 캔버스에 렌즈 레이어 구성 ──────────────────────────────────
+  const off = getOffCanvas(w, h);
+  const oCtx = off.getContext("2d");
+  oCtx.clearRect(0, 0, w, h);
+
+  // 1. 렌즈 텍스처 그리기
+  oCtx.globalCompositeOperation = "source-over";
+  oCtx.globalAlpha = 1.0;
+  oCtx.drawImage(lensImg, cx - sw/2, cy - sh/2, sw, sh);
+
+  // 2. 홍채 경계 소프트 페이드 (destination-out으로 바깥쪽 지우기)
+  //    → 딱딱한 원 테두리 없이 자연스럽게 녹아듦
+  oCtx.globalCompositeOperation = "destination-out";
+  const fade = oCtx.createRadialGradient(cx, cy, r * 0.88, cx, cy, r * 1.10);
+  fade.addColorStop(0, "rgba(0,0,0,0)");
+  fade.addColorStop(1, "rgba(0,0,0,1)");
+  oCtx.fillStyle = fade;
+  oCtx.beginPath();
+  oCtx.arc(cx, cy, r * 1.15, 0, Math.PI*2);
+  oCtx.fill();
+
+  // 3. 눈꺼풀 외부 제거 (다각형 바깥 destination-out)
+  const poly = contourIndices
+    .map(idx => { const p = landmarks[idx]; return [w - p.x*w, p.y*h]; })
+    .filter(([x,y]) => x > 0 && y > 0 && x < w && y < h);
+
+  if (poly.length > 2) {
+    oCtx.globalCompositeOperation = "destination-in";
+    oCtx.fillStyle = "rgba(0,0,0,1)";
+    oCtx.beginPath();
+    poly.forEach(([x,y], i) => i===0 ? oCtx.moveTo(x,y) : oCtx.lineTo(x,y));
+    oCtx.closePath();
+    oCtx.fill();
+  }
+
+  // ── 메인 캔버스에 합성 ────────────────────────────────────────────────────
   ctx.save();
-
-  // 눈꺼풀 클리핑
-  ctx.beginPath();
-  contourIndices.forEach((idx, i) => {
-    const p = landmarks[idx];
-    const x = w - p.x * w, y = p.y * h;
-    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-  });
-  ctx.closePath();
-  ctx.clip();
-
-  // 컬러렌즈는 홍채를 덮는 불투명 플라스틱 → source-over가 물리적으로 정확함
-  // 텍스처 PNG의 투명 중앙(동공 부분)은 실제 동공이 비쳐 보임
   ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.88;
-  ctx.drawImage(lensImg, cx - size/2, cy - size/2, size, size);
+  ctx.globalAlpha = 0.90;
+  ctx.drawImage(off, 0, 0);
+  ctx.restore();
 
-  // 눈 광택 하이라이트 (자연스러운 습윤감)
+  // ── 눈 광택 하이라이트 (습윤감) ───────────────────────────────────────────
+  ctx.save();
+  if (poly.length > 2) {
+    ctx.beginPath();
+    poly.forEach(([x,y], i) => i===0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y));
+    ctx.closePath();
+    ctx.clip();
+  }
   ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.18;
-  const hx = cx - irisR*0.18, hy = cy - irisR*0.22;
-  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, irisR*0.38);
-  glow.addColorStop(0, "rgba(255,255,255,0.9)");
+  ctx.globalAlpha = 0.20;
+  const hx = cx - r*0.18, hy = cy - r*0.22;
+  const glow = ctx.createRadialGradient(hx, hy, 0, hx, hy, r*0.38);
+  glow.addColorStop(0, "rgba(255,255,255,0.95)");
   glow.addColorStop(1, "rgba(255,255,255,0)");
   ctx.beginPath();
-  ctx.arc(cx, cy, irisR, 0, Math.PI*2);
+  ctx.arc(cx, cy, r, 0, Math.PI*2);
   ctx.fillStyle = glow;
   ctx.fill();
-
   ctx.restore();
 }
 
-// ── Mode B: HSL 픽셀 색상 변환 (색상 데이터만 있을 때) ───────────────────────
+// ── Mode B: HSL 픽셀 색상 변환 ───────────────────────────────────────────────
 function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
   const pupilR = irisR * 0.42;
-  const polygon = contourIndices.map(idx => {
-    const p = landmarks[idx];
-    return [w - p.x * w, p.y * h];
-  });
+  const polygon = contourIndices
+    .map(idx => { const p = landmarks[idx]; return [w - p.x*w, p.y*h]; })
+    .filter(([x,y]) => x > 0 && y > 0 && x < w && y < h);
   const [tH, tS, tL] = rgbToHsl(...targetRgb);
 
   const x0 = Math.max(0, Math.floor(cx - irisR - 2));
@@ -121,7 +201,7 @@ function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
       const dx=wx-cx, dy=wy-cy;
       const dist = Math.sqrt(dx*dx+dy*dy);
       if (dist < pupilR*0.88 || dist > irisR*1.01) continue;
-      if (!pointInPolygon(wx, wy, polygon)) continue;
+      if (polygon.length > 2 && !pointInPolygon(wx, wy, polygon)) continue;
 
       const i = (py*bw+px)*4;
       const [pH,pS,pL] = rgbToHsl(d[i],d[i+1],d[i+2]);
@@ -138,14 +218,17 @@ function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
   }
   ctx.putImageData(imageData, x0, y0);
 
-  // 림벌링
+  // 림벌링 + 하이라이트
   ctx.save();
-  ctx.beginPath();
-  contourIndices.forEach((idx,i)=>{ const p=landmarks[idx]; i===0?ctx.moveTo(w-p.x*w,p.y*h):ctx.lineTo(w-p.x*w,p.y*h); });
-  ctx.closePath(); ctx.clip();
+  if (polygon.length > 2) {
+    ctx.beginPath();
+    polygon.forEach(([x,y],i)=> i===0?ctx.moveTo(x,y):ctx.lineTo(x,y));
+    ctx.closePath(); ctx.clip();
+  }
   ctx.beginPath(); ctx.arc(cx,cy,irisR*0.96,0,Math.PI*2);
   ctx.strokeStyle="rgba(6,4,2,0.82)"; ctx.lineWidth=irisR*0.11; ctx.stroke();
   ctx.globalCompositeOperation="screen";
+  ctx.globalAlpha=0.15;
   const hx2=cx-irisR*0.22, hy2=cy-irisR*0.25;
   const g2=ctx.createRadialGradient(hx2,hy2,0,hx2,hy2,irisR*0.38);
   g2.addColorStop(0,"rgba(255,255,255,0.18)"); g2.addColorStop(1,"rgba(255,255,255,0)");
@@ -157,8 +240,6 @@ function tintIris(cx, cy, irisR, targetRgb, contourIndices, landmarks, w, h) {
 async function loadProducts() {
   const res = await fetch("products.json");
   products = await res.json();
-
-  // 텍스처 이미지 사전 로딩
   products.forEach(p => {
     if (p.texture) {
       const img = new Image();
@@ -166,7 +247,6 @@ async function loadProducts() {
       lensImages[p.id] = img;
     }
   });
-
   productListEl.innerHTML = "";
   products.forEach(p => {
     const card = document.createElement("div");
@@ -217,17 +297,6 @@ async function setupCamera() {
   canvas.height = video.videoHeight;
 }
 
-function irisCenterAndRadius(lm, indices, w, h) {
-  const c = lm[indices[0]];
-  const cx = c.x*w, cy = c.y*h;
-  let r = 0;
-  for (let i=1; i<indices.length; i++) {
-    const p = lm[indices[i]];
-    r += Math.sqrt((p.x*w-cx)**2+(p.y*h-cy)**2);
-  }
-  return { cx, cy, radius: r/(indices.length-1) };
-}
-
 // ── Render loop ───────────────────────────────────────────────────────────────
 function renderLoop() {
   requestAnimationFrame(renderLoop);
@@ -249,18 +318,19 @@ function renderLoop() {
   if (!activeProduct) return;
 
   const lm = result.faceLandmarks[0];
-  const left  = irisCenterAndRadius(lm, LEFT_IRIS,  w, h);
-  const right = irisCenterAndRadius(lm, RIGHT_IRIS, w, h);
-  left.cx  = w - left.cx;
-  right.cx = w - right.cx;
+  const leftGeo  = irisGeometry(lm, LEFT_IRIS,  w, h);
+  const rightGeo = irisGeometry(lm, RIGHT_IRIS, w, h);
+  // x축 미러 보정
+  leftGeo.cx  = w - (w - leftGeo.cx);
+  rightGeo.cx = w - (w - rightGeo.cx);
 
   if (activeProduct.texture && lensImages[activeProduct.id]) {
     const img = lensImages[activeProduct.id];
-    drawTextureLens(img, left.cx,  left.cy,  left.radius,  LEFT_EYE_CONTOUR,  lm, w, h);
-    drawTextureLens(img, right.cx, right.cy, right.radius, RIGHT_EYE_CONTOUR, lm, w, h);
+    drawTextureLens(img, leftGeo,  LEFT_EYE_CONTOUR,  lm, w, h);
+    drawTextureLens(img, rightGeo, RIGHT_EYE_CONTOUR, lm, w, h);
   } else if (activeProduct.color) {
-    tintIris(left.cx,  left.cy,  left.radius,  activeProduct.color, LEFT_EYE_CONTOUR,  lm, w, h);
-    tintIris(right.cx, right.cy, right.radius, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
+    tintIris(leftGeo.cx,  leftGeo.cy,  leftGeo.r,  activeProduct.color, LEFT_EYE_CONTOUR,  lm, w, h);
+    tintIris(rightGeo.cx, rightGeo.cy, rightGeo.r, activeProduct.color, RIGHT_EYE_CONTOUR, lm, w, h);
   }
 }
 
