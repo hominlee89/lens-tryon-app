@@ -53,6 +53,19 @@ html, body {
 #beauty-btn.beauty-on { background: #d6568f; }
 #beauty-btn:active { background: #555; }
 
+#compare-btn {
+  background: #3a3a3a;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+#compare-btn.compare-on { background: #4ea1ff; }
+#compare-btn:active { background: #555; }
+
 #layout {
   flex: 1;
   display: flex;

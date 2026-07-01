@@ -44,6 +44,10 @@ const lensImages = {};
 let beautyLevel = 2;
 const BEAUTY_STRENGTH = [0, 0.5, 0.75, 0.95];
 
+// 전/후 비교 모드 (세로 분할선)
+let compareMode = false;
+let splitRatio = 0.5; // 0~1, 분할선 위치
+
 // ── 추적 상태 (스무딩 + 속도 예측) ──────────────────────────────────────────
 const track = { left: null, right: null };
 const SMOOTH  = 0.55;
@@ -206,6 +210,18 @@ function drawTextureLens(lensImg, geo, diaMm, contourIndices, landmarks, w, h) {
   spec(-0.28,-0.32,0.18,0.9);
   spec( 0.18, 0.12,0.08,0.45);
 
+  // 5. 상단 글로시 하이라이트 밴드 (젖은 반사광 — 매크로 사진 느낌)
+  ctx.globalAlpha = 0.28;
+  ctx.save();
+  ctx.scale(1, 0.5);                       // 가로로 긴 타원형 밴드
+  const gloss = ctx.createRadialGradient(0, -0.9, 0, 0, -0.9, 0.7);
+  gloss.addColorStop(0, "rgba(255,255,255,0.55)");
+  gloss.addColorStop(0.6, "rgba(255,255,255,0.12)");
+  gloss.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.beginPath(); ctx.arc(0, -0.9, 0.7, 0, Math.PI*2);
+  ctx.fillStyle = gloss; ctx.fill();
+  ctx.restore();
+
   ctx.restore();
 }
 
@@ -286,6 +302,30 @@ function setupBeautyButton() {
   sync();
 }
 
+function setupCompareButton() {
+  const btn = document.createElement("button");
+  btn.id = "compare-btn";
+  const sync = () => { btn.textContent = compareMode ? "⇋ 비교 ON" : "⇋ 비교"; btn.classList.toggle("compare-on", compareMode); };
+  btn.addEventListener("click", () => { compareMode = !compareMode; splitRatio = 0.5; sync(); });
+  topbar.insertBefore(btn, captureBtn);
+  sync();
+
+  // 분할선 드래그 (미러 화면 기준)
+  const stage = document.getElementById("camera-stage");
+  let dragging = false;
+  const setFromEvent = e => {
+    const rect = stage.getBoundingClientRect();
+    const cx = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+    splitRatio = clamp(1 - cx / rect.width, 0, 1);
+  };
+  const down = e => { if (!compareMode) return; dragging = true; setFromEvent(e); };
+  const move = e => { if (dragging) { setFromEvent(e); e.preventDefault(); } };
+  const up = () => { dragging = false; };
+  stage.addEventListener("pointerdown", down);
+  stage.addEventListener("pointermove", move, { passive: false });
+  window.addEventListener("pointerup", up);
+}
+
 async function setupFaceLandmarker() {
   const fr = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
@@ -352,6 +392,12 @@ function processFrame() {
   const lm = faces[0];
   const dia = activeProduct.diaMm;
 
+  // 비교 모드: 렌즈를 분할선 오른쪽(착용)에만 그림. 미러 화면이라 splitX 반전
+  ctx.save();
+  if (compareMode) {
+    const sx = (1 - splitRatio) * w;       // 미러 보정
+    ctx.beginPath(); ctx.rect(0, 0, sx, h); ctx.clip();
+  }
   if (eyeVisible(lm, LEFT_EYE_CONTOUR)) {
     const g = trackGeo("left", refinePupil(irisGeometry(lm, LEFT_IRIS, w, h), w, h));
     drawTextureLens(img, g, dia, LEFT_EYE_CONTOUR, lm, w, h);
@@ -360,6 +406,34 @@ function processFrame() {
     const g = trackGeo("right", refinePupil(irisGeometry(lm, RIGHT_IRIS, w, h), w, h));
     drawTextureLens(img, g, dia, RIGHT_EYE_CONTOUR, lm, w, h);
   }
+  ctx.restore();
+
+  if (compareMode) drawCompareDivider(w, h);
+}
+
+// 비교 모드 분할선 + 핸들 + 라벨 (화면 미러 기준: 왼쪽=착용, 오른쪽=원본)
+function drawCompareDivider(w, h) {
+  const x = (1 - splitRatio) * w;
+  ctx.save();
+  ctx.strokeStyle = "rgba(255,255,255,0.9)";
+  ctx.lineWidth = Math.max(2, w*0.003);
+  ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  // 핸들
+  ctx.fillStyle = "rgba(255,255,255,0.95)";
+  ctx.beginPath(); ctx.arc(x, h*0.5, Math.max(14, w*0.02), 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.font = `${Math.max(16, w*0.022)}px sans-serif`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ctx.fillText("⇋", x, h*0.5);
+  // 라벨 (미러라 좌우 반대로 표기)
+  ctx.font = `bold ${Math.max(14, w*0.02)}px sans-serif`;
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(255,255,255,0.92)";
+  ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.lineWidth = 3;
+  const label = (t, lx) => { ctx.textAlign = "center"; ctx.strokeText(t, lx, h*0.04); ctx.fillText(t, lx, h*0.04); };
+  label("착용", x*0.5);
+  label("원본", x + (w-x)*0.5);
+  ctx.restore();
 }
 
 const hasRVFC = typeof video.requestVideoFrameCallback === "function";
@@ -389,6 +463,7 @@ function capture() {
 async function init() {
   captureBtn.addEventListener("click", capture);
   setupBeautyButton();
+  setupCompareButton();
   await loadProducts();
   if (products.length > 0) selectProduct(products[0].id);
   statusEl.textContent = "모델 로딩 중...";
