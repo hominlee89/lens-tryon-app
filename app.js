@@ -341,32 +341,55 @@ function setupCompareButton() {
   window.addEventListener("pointerup", up);
 }
 
+const isMobile = window.matchMedia("(max-width: 759px)").matches
+  || /iPhone|Android.*Mobile/.test(navigator.userAgent);
+
 async function setupFaceLandmarker() {
   const fr = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
-  faceLandmarker = await FaceLandmarker.createFromOptions(fr, {
+  const make = (delegate) => FaceLandmarker.createFromOptions(fr, {
     baseOptions: {
       modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task",
-      delegate: "GPU",
+      delegate,
     },
     outputFaceBlendshapes: false,
     runningMode: "VIDEO",
     numFaces: 2,
     refineLandmarks: true,
   });
+  // #2: GPU delegate 시도 → 미지원 기기면 CPU로 폴백 (앱이 안 뜨는 문제 방지)
+  try {
+    faceLandmarker = await make("GPU");
+  } catch (e) {
+    console.warn("GPU delegate 실패, CPU로 폴백:", e);
+    faceLandmarker = await make("CPU");
+  }
 }
+
+function syncCanvasSize() {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return;
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  if (beautyCanvas.width !== w || beautyCanvas.height !== h) { beautyCanvas.width = w; beautyCanvas.height = h; }
+}
+
 async function setupCamera() {
+  // #3: 모바일은 세로 해상도 요청 (세로 왜곡/레터박스 방지)
+  const dims = isMobile
+    ? { width: { ideal: 720 }, height: { ideal: 1280 } }
+    : { width: { ideal: 1280 }, height: { ideal: 720 } };
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+    video: { facingMode: "user", ...dims },
     audio: false,
   });
   video.srcObject = stream;
   await new Promise(r => { video.onloadedmetadata = r; });
-  video.play();
-  const w = video.videoWidth, h = video.videoHeight;
-  canvas.width = w; canvas.height = h;
-  beautyCanvas.width = w; beautyCanvas.height = h;
+  await video.play();
+  syncCanvasSize();
 }
+// #3: 화면 회전/리사이즈 시 캔버스 버퍼 재동기화
+window.addEventListener("resize", syncCanvasSize);
+window.addEventListener("orientationchange", () => setTimeout(syncCanvasSize, 300));
 
 // ── Render loop ───────────────────────────────────────────────────────────────
 let lastResult = null;
@@ -475,6 +498,42 @@ function capture() {
   }, "image/png");
 }
 
+// #4: 로딩/권한 지연 시 재시도 버튼
+let retryBtn = null;
+function showRetry(msg) {
+  statusEl.style.display = "block";
+  statusEl.textContent = msg;
+  if (!retryBtn) {
+    retryBtn = document.createElement("button");
+    retryBtn.id = "retry-btn";
+    retryBtn.textContent = "카메라 다시 시작";
+    retryBtn.addEventListener("click", () => { hideRetry(); startCameraFlow(); });
+    statusEl.after(retryBtn);
+  }
+  retryBtn.style.display = "block";
+}
+function hideRetry() { if (retryBtn) retryBtn.style.display = "none"; }
+
+let camStarted = false;
+async function startCameraFlow() {
+  hideRetry();
+  statusEl.style.display = "block";
+  statusEl.textContent = "카메라 권한을 허용해 주세요";
+  try {
+    await setupCamera();
+  } catch (err) {
+    showRetry("카메라를 시작할 수 없습니다. 권한을 확인하고 다시 시도해 주세요.");
+    return;
+  }
+  camStarted = true;
+  hideRetry();
+  startLoop();
+  // 4초 내 프레임이 안 들어오면(정지 상태) 재시도 안내
+  setTimeout(() => {
+    if (video.readyState < 2) showRetry("카메라 응답이 지연되고 있습니다. 다시 시작해 주세요.");
+  }, 4000);
+}
+
 async function init() {
   captureBtn.addEventListener("click", capture);
   setupBeautyButton();
@@ -482,11 +541,14 @@ async function init() {
   await loadProducts();
   if (products.length > 0) selectProduct(products[0].id);
   statusEl.textContent = "모델 로딩 중...";
-  await setupFaceLandmarker();
-  statusEl.textContent = "카메라 권한을 허용해 주세요";
-  try { await setupCamera(); }
-  catch (err) { statusEl.textContent = "카메라 접근 실패: " + err.message; return; }
-  startLoop();
+  try {
+    await setupFaceLandmarker();
+  } catch (err) {
+    showRetry("얼굴 인식 모델 로딩에 실패했습니다. 새로고침 후 다시 시도해 주세요.");
+    return;
+  }
+  // 모델 로딩이 오래 걸리면(4초) 안내 — 성공 시 startCameraFlow가 갱신
+  await startCameraFlow();
 }
 
 init();
