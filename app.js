@@ -304,26 +304,62 @@ function tintIris(geo, targetRgb, contourIndices, landmarks, w, h) {
   ctx.restore();
 }
 
-// ── Phase 8: 뷰티 필터가 적용된 비디오 그리기 ───────────────────────────────
+// ── Phase 8: 뷰티 필터 (ctx.filter 미사용 → 모든 Safari 호환) ────────────────
+// 스킨 스무딩은 "축소→확대" 보간 블러로 구현, 톤 보정은 합성 모드로
+const beautyCanvas = document.createElement("canvas");
+const bctx = beautyCanvas.getContext("2d");
+
 function drawVideoMirrored(w, h) {
   ctx.save(); ctx.translate(w,0); ctx.scale(-1,1);
   ctx.drawImage(video,0,0,w,h); ctx.restore();
 }
 function drawScene(w, h) {
-  if (beautyLevel === 0) { drawVideoMirrored(w, h); return; }
-  const L = beautyLevel; // 1~3
-  // 톤 보정 (밝기·채도·대비)
-  ctx.filter = `brightness(${1+0.035*L}) saturate(${1+0.06*L}) contrast(${1+0.012*L})`;
   drawVideoMirrored(w, h);
-  ctx.filter = "none";
-  // 스킨 스무딩: 블러 복사본을 soft-light로 → 피부 결 부드럽게(눈은 뒤에서 렌즈로 덮임)
+  if (beautyLevel === 0) return;
+  const L = beautyLevel; // 1~3
+
+  // ── 블러 복사본 생성 (비디오를 작게 그렸다가 크게 확대 = 보간 블러) ──────
+  const sc = 0.22 - 0.03*L;                    // 레벨 높을수록 더 흐리게
+  const ow = Math.max(2, Math.round(w*sc));
+  const oh = Math.max(2, Math.round(h*sc));
+  if (beautyCanvas.width !== ow || beautyCanvas.height !== oh) {
+    beautyCanvas.width = ow; beautyCanvas.height = oh;
+  }
+  bctx.save(); bctx.translate(ow,0); bctx.scale(-1,1);
+  bctx.drawImage(video, 0, 0, ow, oh); bctx.restore();
+
+  ctx.imageSmoothingEnabled = true;
+
+  // 1. 스킨 스무딩: 블러본을 소량 source-over + soft-light로 겹침 (피부결 완화)
+  ctx.save();
+  ctx.globalAlpha = 0.16 + 0.10*L;
+  ctx.drawImage(beautyCanvas, 0, 0, w, h);
+  ctx.globalCompositeOperation = "soft-light";
+  ctx.globalAlpha = 0.30 + 0.12*L;
+  ctx.drawImage(beautyCanvas, 0, 0, w, h);
+  ctx.restore();
+
+  // 2. 밝기 업 (화이트 screen)
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.globalAlpha = 0.05*L;
+  ctx.fillStyle = "#ffffff"; ctx.fillRect(0,0,w,h);
+  ctx.restore();
+
+  // 3. 웜톤 글로우 (soft-light 따뜻한 색)
   ctx.save();
   ctx.globalCompositeOperation = "soft-light";
-  ctx.globalAlpha = 0.22 + 0.13*L;
-  ctx.filter = `blur(${3 + 2*L}px)`;
+  ctx.globalAlpha = 0.10*L;
+  ctx.fillStyle = "#ffd8b0"; ctx.fillRect(0,0,w,h);
+  ctx.restore();
+
+  // 4. 채도·대비 팝 (원본을 overlay로 겹침)
+  ctx.save();
+  ctx.globalCompositeOperation = "overlay";
+  ctx.globalAlpha = 0.06*L;
   drawVideoMirrored(w, h);
   ctx.restore();
-  ctx.filter = "none";
+
   ctx.globalCompositeOperation = "source-over";
   ctx.globalAlpha = 1;
 }
