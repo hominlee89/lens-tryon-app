@@ -38,7 +38,7 @@
     "dia": "14.2mm",
     "bc": "8.6mm",
     "price": "18,000원",
-    "color": [180, 110, 40],
+    "texture": "assets/lens_natural_brown.png",
     "swatch": "#b46e28"
   },
   {
@@ -48,7 +48,7 @@
     "dia": "14.5mm",
     "bc": "8.6mm",
     "price": "22,000원",
-    "color": [120, 145, 162],
+    "texture": "assets/lens_gray_circle.png",
     "swatch": "#7891a2"
   }
 ]

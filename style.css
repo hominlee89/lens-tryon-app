@@ -143,13 +143,15 @@ html, body {
 
 #video { display: none; }
 
-#overlay {
+#beauty, #overlay {
   position: absolute;
   top: 0; left: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+#beauty  { z-index: 1; }
+#overlay { z-index: 2; }
 
 #status {
   position: absolute;
