@@ -25,7 +25,7 @@ html, body {
 
 #topbar h1 {
   font-size: 16px;
-  margin: 0;
+  margin: 0 auto 0 0;
   font-weight: 600;
 }
 
@@ -39,6 +39,19 @@ html, body {
   cursor: pointer;
 }
 #capture-btn:active { background: #555; }
+
+#beauty-btn {
+  background: #3a3a3a;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 14px;
+  cursor: pointer;
+  margin-right: 8px;
+}
+#beauty-btn.beauty-on { background: #d6568f; }
+#beauty-btn:active { background: #555; }
 
 #layout {
   flex: 1;
