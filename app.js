@@ -59,7 +59,9 @@ function trackGeo(side, raw) {
   const rvx = raw.cx - st.cx, rvy = raw.cy - st.cy;
   st.vx = st.vx*0.6 + rvx*0.4;
   st.vy = st.vy*0.6 + rvy*0.4;
-  const a = SMOOTH, b = 1 - a;
+  // 속도 적응 스무딩(1€ 필터 개념): 빠르면 반응↑(지연↓), 느리면 안정↑(떨림↓)
+  const speed = Math.hypot(rvx, rvy);
+  const a = clamp(0.45 + speed*0.032, 0.45, 0.92), b = 1 - a;
   const s = {
     cx: st.cx*b + raw.cx*a,
     cy: st.cy*b + raw.cy*a,
@@ -71,7 +73,9 @@ function trackGeo(side, raw) {
     vx: st.vx, vy: st.vy,
   };
   track[side] = s;
-  return { ...s, cx: s.cx + s.vx*PREDICT, cy: s.cy + s.vy*PREDICT };
+  // 속도 비례 예측: 빠를수록 더 앞서 그려 지연 상쇄
+  const predict = clamp(0.4 + speed*0.02, 0.4, 0.85);
+  return { ...s, cx: s.cx + s.vx*predict, cy: s.cy + s.vy*predict };
 }
 
 function clamp(v, min, max) { return Math.min(max, Math.max(min, v)); }
@@ -152,17 +156,21 @@ function eyeVisible(lm, contour) {
   return (v/hh) >= 0.12; // EAR
 }
 
-// ── 텍스처 렌즈 렌더 (affine 타원 + HVID 크기 + 동공 매칭 + 발색 적응) ────────
+// ── 픽셀 덮어쓰기 + 눈색 혼합 렌더러 ────────────────────────────────────────
+// 홍채 타원에 "실제 눈 픽셀"을 오버레이에 그린 뒤 렌즈를 블렌드 → 진짜 색 혼합.
+// (① 완전 덮어쓰기: 홍채 픽셀을 다시 그림  ④ 발색: multiply/soft-light로 밑색과 섞임)
 function drawTextureLens(lensImg, geo, diaMm, contourIndices, landmarks, w, h) {
   if (!lensImg.complete || lensImg.naturalWidth === 0) return;
   const { cx, cy, ax, ay, r, pupilR, irisLuma } = geo;
   const scale = (diaMm || 14.2) / HVID_MM;
 
-  // Phase 7: 어두운 눈 = 발색 강하게(불투명↑), 밝은 눈 = 은은하게
-  const lensAlpha = clamp(0.86 + (0.4 - irisLuma)*0.32, 0.72, 0.96);
+  // 발색 적응: 어두운 눈 = 색 강하게, 밝은 눈 = 은은하게 (밑색 비침)
+  const srcA  = clamp(0.52 + (0.42 - irisLuma)*0.55, 0.40, 0.82); // 색 침착
+  const mulA  = 0.34;                                             // 패턴/림벌 깊이
+  const softA = clamp(0.42 + (0.42 - irisLuma)*0.25, 0.34, 0.60); // 색 혼합
 
   ctx.save();
-  // 눈꺼풀 클립
+  // 눈꺼풀 클립 (화면 좌표)
   ctx.beginPath();
   contourIndices.forEach((idx, i) => {
     const p = landmarks[idx];
@@ -172,35 +180,48 @@ function drawTextureLens(lensImg, geo, diaMm, contourIndices, landmarks, w, h) {
   ctx.closePath();
   ctx.clip();
 
+  // 홍채 타원으로 클립 (affine 공간에서 단위원 = 타원)
   ctx.translate(cx, cy);
   ctx.transform(ax[0]*scale, ax[1]*scale, ay[0]*scale, ay[1]*scale, 0, 0);
+  ctx.beginPath(); ctx.arc(0, 0, 1, 0, Math.PI*2); ctx.clip();
 
-  // 1. 컨택트 섀도우
+  // ── 1. 실제 눈 픽셀을 오버레이에 그림 (덮어쓰기 기반) ──────────────────────
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);        // 화면 좌표로
+  ctx.translate(w, 0); ctx.scale(-1, 1);      // 미러 (뷰티/랜드마크와 정합)
   ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = 0.22;
-  const cs = ctx.createRadialGradient(0,0,0.92, 0,0,1.12);
-  cs.addColorStop(0,"rgba(0,0,0,0)"); cs.addColorStop(0.6,"rgba(30,20,12,0.5)"); cs.addColorStop(1,"rgba(0,0,0,0)");
-  ctx.beginPath(); ctx.arc(0,0,1.12,0,Math.PI*2); ctx.fillStyle=cs; ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.drawImage(video, 0, 0, w, h);           // 타원 클립 영역만 채워짐
+  ctx.restore();                              // affine CTM + 클립 복원
 
-  // 2. 렌즈 본체 2패스 (source-over + multiply → 홍채 질감 비침)
-  ctx.globalCompositeOperation = "source-over";
-  ctx.globalAlpha = lensAlpha;
+  // ── 2. 렌즈를 눈 픽셀 위에 블렌드 → 눈색과 실제로 섞임 ────────────────────
+  ctx.globalCompositeOperation = "source-over"; // 색 침착 (반투명, 눈 비침)
+  ctx.globalAlpha = srcA;
   ctx.drawImage(lensImg, -1, -1, 2, 2);
-  ctx.globalCompositeOperation = "multiply";
-  ctx.globalAlpha = 0.24;
+  ctx.globalCompositeOperation = "multiply";    // 패턴/림벌 깊이 (밑색 곱)
+  ctx.globalAlpha = mulA;
+  ctx.drawImage(lensImg, -1, -1, 2, 2);
+  ctx.globalCompositeOperation = "soft-light";  // 눈색 기반 색 혼합
+  ctx.globalAlpha = softA;
   ctx.drawImage(lensImg, -1, -1, 2, 2);
   ctx.globalCompositeOperation = "source-over";
 
-  // 3. 동공 매칭: 검출된 실제 동공을 어둡게 (AR 방식 destination-out)
+  // ── 3. 컨택트 섀도우 ──────────────────────────────────────────────────────
+  ctx.globalAlpha = 0.20;
+  const cs = ctx.createRadialGradient(0,0,0.90, 0,0,1.0);
+  cs.addColorStop(0,"rgba(0,0,0,0)"); cs.addColorStop(1,"rgba(25,17,10,0.6)");
+  ctx.beginPath(); ctx.arc(0,0,1,0,Math.PI*2); ctx.fillStyle=cs; ctx.fill();
+
+  // ── 4. 동공: 실제 검출 크기만큼 뚫어 진짜 눈(동공) 비침 (destination-out) ──
   const pupilU = clamp((pupilR || r*0.4) / (r*scale), 0.28, 0.55);
-  const pg = ctx.createRadialGradient(0,0, pupilU*0.25, 0,0, pupilU);
-  pg.addColorStop(0,"rgba(0,0,0,0.82)"); pg.addColorStop(0.62,"rgba(0,0,0,0.42)"); pg.addColorStop(1,"rgba(0,0,0,0)");
+  const pg = ctx.createRadialGradient(0,0, pupilU*0.30, 0,0, pupilU);
+  pg.addColorStop(0,"rgba(0,0,0,1)"); pg.addColorStop(0.7,"rgba(0,0,0,0.7)"); pg.addColorStop(1,"rgba(0,0,0,0)");
   ctx.globalCompositeOperation = "destination-out";
   ctx.globalAlpha = 1;
   ctx.beginPath(); ctx.arc(0,0,pupilU,0,Math.PI*2); ctx.fillStyle=pg; ctx.fill();
   ctx.globalCompositeOperation = "source-over";
 
-  // 4. 이중 캐치라이트
+  // ── 5. 캐치라이트 + 상단 글로시 밴드 (젖은 반사광) ────────────────────────
   ctx.globalAlpha = 0.6;
   const spec = (sx,sy,sr,al) => {
     const g = ctx.createRadialGradient(sx,sy,0,sx,sy,sr);
@@ -209,17 +230,11 @@ function drawTextureLens(lensImg, geo, diaMm, contourIndices, landmarks, w, h) {
   };
   spec(-0.28,-0.32,0.18,0.9);
   spec( 0.18, 0.12,0.08,0.45);
-
-  // 5. 상단 글로시 하이라이트 밴드 (젖은 반사광 — 매크로 사진 느낌)
-  ctx.globalAlpha = 0.28;
-  ctx.save();
-  ctx.scale(1, 0.5);                       // 가로로 긴 타원형 밴드
-  const gloss = ctx.createRadialGradient(0, -0.9, 0, 0, -0.9, 0.7);
-  gloss.addColorStop(0, "rgba(255,255,255,0.55)");
-  gloss.addColorStop(0.6, "rgba(255,255,255,0.12)");
-  gloss.addColorStop(1, "rgba(255,255,255,0)");
-  ctx.beginPath(); ctx.arc(0, -0.9, 0.7, 0, Math.PI*2);
-  ctx.fillStyle = gloss; ctx.fill();
+  ctx.globalAlpha = 0.26;
+  ctx.save(); ctx.scale(1, 0.5);
+  const gloss = ctx.createRadialGradient(0,-0.9,0, 0,-0.9,0.7);
+  gloss.addColorStop(0,"rgba(255,255,255,0.5)"); gloss.addColorStop(0.6,"rgba(255,255,255,0.1)"); gloss.addColorStop(1,"rgba(255,255,255,0)");
+  ctx.beginPath(); ctx.arc(0,-0.9,0.7,0,Math.PI*2); ctx.fillStyle=gloss; ctx.fill();
   ctx.restore();
 
   ctx.restore();
